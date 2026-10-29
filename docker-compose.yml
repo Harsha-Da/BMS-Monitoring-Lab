@@ -1,0 +1,129 @@
+version: '3.8'
+
+networks:
+  monitoring_net:
+    driver: bridge
+
+volumes:
+  fuxa_data:
+  mongo_data:
+  grafana_data:
+  prometheus_data:
+
+
+services:
+  # 1. Mongo (Lightweight)
+  mongo:
+    image: mongo:4.4
+    container_name: alerta_mongo
+    restart: unless-stopped
+    command: ["mongod", "--wiredTigerCacheSizeGB", "0.1"]
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - monitoring_net
+    deploy:
+      resources:
+        limits:
+          memory: 150M
+
+# 2. SCADA: FUXA
+  fuxa:
+    image: frangoteam/fuxa:latest
+    container_name: fuxa_bms
+    restart: unless-stopped
+    ports:
+      - "1881:1881"
+    volumes:
+      - fuxa_data:/usr/src/app/FUXA/server/_appdata
+    networks:
+      - monitoring_net
+    deploy:
+      resources:
+        limits:
+          memory: 250M
+
+# 3. Alerta (I/O Optimized)
+  alerta:
+    image: alerta/alerta-web:latest
+    container_name: alerta_core
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=mongodb://alerta_mongo:27017/monitoring
+      - AUTH_REQUIRED=True
+      - SIGNUP_ENABLED=False
+      - ADMIN_USERS=['xxxxxxxxxx']
+      - SECRET_KEY=xxxxxxxxxxxxxxx
+      - PLUGINS=reject
+      - BASE_URL=/
+      - ALERTA_ENDPOINT=http://localhost:8080/api
+      - UWSGI_PROCESSES=2
+      - UWSGI_THREADS=4
+      - UWSGI_LISTEN=1024
+      - UWSGI_ENABLE_THREADS=True
+      - UWSGI_LAZY_APPS=True
+      - UWSGI_HARAKIRI=60
+      - UWSGI_BUFFER_SIZE=65535
+      - UWSGI_MAX_REQUESTS=1000
+      - UWSGI_RELOAD_ON_RSS=180
+      - ALLOWED_HOSTS=['*']
+      - CORS_ORIGINS=['*']
+      - ENVIRONMENTS=Production,Development,DC_Floor_01
+    depends_on:
+      - mongo
+    networks:
+      - monitoring_net
+    deploy:
+      resources:
+        limits:
+          memory: 400M
+
+# 4. Visualization: Grafana 10-alpine
+  grafana:
+    image: grafana/grafana-oss:10.4.2
+    container_name: grafana_dash
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=xxxxxxxx
+      - GF_SECURITY_ADMIN_PASSWORD=xxxxxxxxxx
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_FEATURE_TOGGLES_ENABLE=publicDashboards
+      - GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - monitoring_net
+    deploy:
+      resources:
+        limits:
+          memory: 200M
+
+  prometheus:
+      image: prom/prometheus:latest
+      container_name: prometheus
+      restart: unless-stopped
+      ports:
+        - "9090:9090"
+      volumes:
+        - ./prometheus.yml:/etc/prometheus/prometheus.yml
+        - prometheus_data:/prometheus
+      command:
+        - '--config.file=/etc/prometheus/prometheus.yml'
+        - '--storage.tsdb.path=/prometheus'
+        - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+        - '--web.console.templates=/usr/share/prometheus/consoles'
+      networks:
+        - monitoring_net
+
+  node_exporter:
+      image: quay.io/prometheus/node-exporter:latest
+      container_name: node_exporter
+      restart: unless-stopped
+      networks:
+        - monitoring_net
